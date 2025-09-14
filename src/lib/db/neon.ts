@@ -1,9 +1,8 @@
 // Configuration Neon Database
 import { neon } from '@neondatabase/serverless'
 import { drizzle } from 'drizzle-orm/neon-http'
-import { config } from 'dotenv'
-
-// config({ path: '.env' })
+import * as schema from './schema'
+import type { NeonHttpDatabase } from 'drizzle-orm/neon-http'
 
 if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is not defined')
@@ -12,14 +11,18 @@ if (!process.env.DATABASE_URL) {
 // Client Neon pour les requêtes SQL
 const sql = neon(process.env.DATABASE_URL)
 
-// Instance Drizzle avec le client Neon
-export const db : any = drizzle(sql as any)
+// Instance Drizzle avec le client Neon et le schéma typé
+export const db: NeonHttpDatabase<typeof schema> = drizzle(sql, { schema })
 
-// Utilitaire pour les transactions
+// Type pour les transactions (Neon HTTP ne supporte pas les transactions)
+export type DatabaseTransaction = typeof db
+
+// Utilitaire pour les transactions (simulation sans transaction réelle)
 export async function withTransaction<T>(
-  callback: (tx: typeof db) => Promise<T>
+  callback: (tx: DatabaseTransaction) => Promise<T>
 ): Promise<T> {
-  return await db.transaction(async (tx : any) => {
-    return await callback(tx)
-  })
+  // Note: Neon HTTP driver ne supporte pas les vraies transactions
+  // On passe simplement l'instance db normale
+  console.warn('⚠️ Neon HTTP driver ne supporte pas les transactions. Opération exécutée sans transaction.')
+  return await callback(db)
 }

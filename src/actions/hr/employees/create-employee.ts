@@ -3,18 +3,15 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { db } from '@/lib/db/neon'
+import { db, withTransaction } from '@/lib/db/neon'
 import { employees, departments } from '@/lib/db/schema'
 import { createEmployeeSchema } from '@/lib/validations/employee-schema'
 import { checkEmailExists, getNextEmployeeNumber } from '@/lib/db/queries/employees'
 import { eq } from 'drizzle-orm'
+import type { DatabaseOperationResult, CreateEmployeeData } from '@/lib/db/types'
 
 // Type pour le résultat de l'action
-type ActionResult = {
-  success: boolean
-  error?: string
-  employeeId?: string
-}
+type ActionResult = DatabaseOperationResult<{ employeeId: string }>
 
 export async function createEmployee(formData: FormData): Promise<ActionResult> {
   try {
@@ -73,34 +70,45 @@ export async function createEmployee(formData: FormData): Promise<ActionResult> 
     // Générer le numéro d'employé
     const employeeNumber = await getNextEmployeeNumber(department.code)
 
-    // Créer l'employé dans la base de données
-    const [newEmployee] = await db
-      .insert(employees)
-      .values({
-        employeeNumber,
-        firstName: validatedData.firstName,
-        lastName: validatedData.lastName,
-        email: validatedData.email,
-        phone: validatedData.phone,
-        dateOfBirth: validatedData.dateOfBirth,
-        address: validatedData.address,
-        emergencyContact: validatedData.emergencyContact,
-        departmentId: validatedData.departmentId,
-        positionId: validatedData.positionId,
-        managerId: validatedData.managerId,
-        hireDate: validatedData.hireDate,
-        medicalLicenseNumber: validatedData.medicalLicenseNumber,
-        licenseExpiry: validatedData.licenseExpiry,
-        status: 'active',
-      })
-      .returning({ id: employees.id })
+    // Créer l'employé dans une transaction
+    const result = await withTransaction(async (tx) => {
+      const [newEmployee] = await tx
+        .insert(employees)
+        .values({
+          employeeNumber,
+          firstName: validatedData.firstName,
+          lastName: validatedData.lastName,
+          email: validatedData.email,
+          phone: validatedData.phone,
+          dateOfBirth: validatedData.dateOfBirth,
+          address: validatedData.address,
+          emergencyContact: validatedData.emergencyContact,
+          departmentId: validatedData.departmentId,
+          positionId: validatedData.positionId,
+          managerId: validatedData.managerId,
+          hireDate: validatedData.hireDate,
+          medicalLicenseNumber: validatedData.medicalLicenseNumber,
+          licenseExpiry: validatedData.licenseExpiry,
+          status: 'active',
+          isActive: true,
+          emailVerified: false,
+        })
+        .returning({ id: employees.id })
 
-    // Revalider la page des employés pour actualiser la liste
-    revalidatePath('/dashboard/hr/employees')
+      return newEmployee
+    })
+
+    // Revalider la page des employés pour actualiser la liste (seulement en contexte web)
+    try {
+      revalidatePath('/dashboard/hr/employees')
+    } catch (error) {
+      // Ignorer l'erreur si on n'est pas dans un contexte Next.js (ex: script de test)
+      console.log('⚠️ revalidatePath non disponible (contexte script)')
+    }
 
     return {
       success: true,
-      employeeId: newEmployee.id,
+      data: { employeeId: result.id },
     }
   } catch (error) {
     console.error('Error creating employee:', error)
@@ -109,12 +117,34 @@ export async function createEmployee(formData: FormData): Promise<ActionResult> 
       return {
         success: false,
         error: 'Données invalides: ' + error.errors.map(e => e.message).join(', '),
+        code: 'VALIDATION_ERROR'
+      }
+    }
+
+    // Gestion des erreurs de contraintes de base de données
+    if (error && typeof error === 'object' && 'code' in error) {
+      const dbError = error as { code: string; detail?: string }
+      
+      switch (dbError.code) {
+        case '23505': // Unique violation
+          return {
+            success: false,
+            error: 'Un employé avec cet email existe déjà',
+            code: 'DUPLICATE_EMAIL'
+          }
+        case '23503': // Foreign key violation
+          return {
+            success: false,
+            error: 'Référence invalide (département ou poste)',
+            code: 'FOREIGN_KEY_ERROR'
+          }
       }
     }
 
     return {
       success: false,
       error: 'Erreur lors de la création de l\'employé',
+      code: 'UNKNOWN_ERROR'
     }
   }
 }
@@ -123,8 +153,8 @@ export async function createEmployee(formData: FormData): Promise<ActionResult> 
 export async function createEmployeeAndRedirect(formData: FormData) {
   const result = await createEmployee(formData)
   
-  if (result.success && result.employeeId) {
-    redirect(`/dashboard/hr/employees/${result.employeeId}`)
+  if (result.success && result.data?.employeeId) {
+    redirect(`/dashboard/hr/employees/${result.data.employeeId}`)
   }
   
   return result

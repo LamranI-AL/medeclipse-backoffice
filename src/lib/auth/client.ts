@@ -4,7 +4,7 @@ import { createAuthClient } from "better-auth/react"
 import { AuthUser, UserRole, UserType } from "@/lib/db/schema"
 
 export const authClient = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3003"
+  baseURL: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3001"
 })
 
 export const {
